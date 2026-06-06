@@ -1,0 +1,76 @@
+#douyin-block-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 120px;
+  z-index: 2147483646;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.78);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  transition: transform 0.18s ease, background 0.18s ease, opacity 0.18s ease;
+}
+
+#douyin-block-fab:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 45, 85, 0.92);
+}
+
+#douyin-block-fab:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+#douyin-block-fab.is-blocked {
+  background: rgba(31, 95, 63, 0.92);
+}
+
+#douyin-block-fab.is-blocked:hover {
+  background: rgba(38, 115, 77, 0.96);
+}
+
+#douyin-block-fab svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+#douyin-block-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  z-index: 2147483647;
+  transform: translate(-50%, -12px);
+  max-width: min(90vw, 420px);
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: rgba(20, 20, 20, 0.92);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+#douyin-block-toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+#douyin-block-toast.douyin-block-toast--success {
+  background: rgba(18, 120, 72, 0.95);
+}
+
+#douyin-block-toast.douyin-block-toast--error {
+  background: rgba(180, 35, 45, 0.95);
+}

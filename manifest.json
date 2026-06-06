@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "抖音一键拉黑",
+  "version": "1.1.0",
+  "description": "在抖音网页版一键拉黑/解除拉黑当前视频作者，并管理黑名单",
+  "permissions": ["storage", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://www.douyin.com/*",
+    "https://www-hj.douyin.com/*"
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "拉黑当前视频作者"
+  },
+  "options_ui": {
+    "page": "src/blacklist.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.douyin.com/*"],
+      "js": ["src/storage.js", "src/content.js"],
+      "css": ["src/styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/inject.js"],
+      "matches": ["https://www.douyin.com/*"]
+    }
+  ],
+  "commands": {
+    "block-author": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+B"
+      },
+      "description": "拉黑当前视频作者"
+    },
+    "unblock-author": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U"
+      },
+      "description": "解除拉黑当前视频作者"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  }
+}

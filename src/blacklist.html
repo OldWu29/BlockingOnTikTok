@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>黑名单管理 - 抖音一键拉黑</title>
+    <link rel="stylesheet" href="blacklist.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <div>
+          <h1>黑名单管理</h1>
+          <p class="subtitle">管理通过本扩展拉黑的用户，可在抖音网页版解除拉黑</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-btn" class="ghost-btn" type="button">刷新列表</button>
+          <button id="clear-btn" class="danger-btn" type="button">清空记录</button>
+        </div>
+      </header>
+
+      <section class="toolbar">
+        <input
+          id="search-input"
+          class="search-input"
+          type="search"
+          placeholder="搜索昵称或 sec_uid..."
+        />
+        <span class="count-badge" id="count-badge">0 人</span>
+      </section>
+
+      <section class="list-wrap">
+        <ul id="blacklist" class="blacklist"></ul>
+        <div id="empty-state" class="empty-state hidden">
+          <p>暂无黑名单记录</p>
+          <p class="empty-hint">在抖音刷视频时拉黑作者，记录会自动出现在这里</p>
+        </div>
+      </section>
+
+      <p class="status" id="status"></p>
+    </main>
+    <script src="storage.js"></script>
+    <script src="blacklist.js"></script>
+  </body>
+</html>

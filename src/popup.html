@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>抖音一键拉黑</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <div class="popup-header">
+        <h1>抖音一键拉黑</h1>
+        <button id="manage-btn" class="link-btn" type="button">黑名单</button>
+      </div>
+      <p class="hint">拉黑或解除拉黑当前正在播放视频的作者</p>
+
+      <section class="author-card" id="author-card">
+        <div class="author-row">
+          <div class="author-name" id="author-name">正在识别作者...</div>
+          <span id="blocked-badge" class="blocked-badge hidden">已拉黑</span>
+        </div>
+        <div class="author-id" id="author-id"></div>
+      </section>
+
+      <button id="block-btn" class="primary-btn" type="button">拉黑当前作者</button>
+      <button id="unblock-btn" class="unblock-btn hidden" type="button">解除拉黑</button>
+      <button id="refresh-btn" class="ghost-btn" type="button">刷新作者信息</button>
+
+      <p class="shortcut">
+        拉黑：<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>
+        &nbsp;|&nbsp;
+        解除：<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd>
+      </p>
+      <p class="note">请先登录抖音网页版。若失败，请刷新页面后重试。</p>
+      <p class="status" id="status"></p>
+    </main>
+    <script src="storage.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
