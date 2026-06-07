@@ -6,6 +6,13 @@
 
   const awemeAuthorCache = new Map();
   const liveAuthorCache = new Map();
+  const MAX_CACHE_SIZE = 200;
+  const MAX_JSON_BYTES = 512 * 1024;
+  const NETWORK_URL_RE =
+    /aweme\/v1\/web\/(aweme|feed|recommend|module|history|tab)|webcast\/room\/web\/enter|webcast\/user\/profile/i;
+
+  let payloadQueue = [];
+  let payloadDrainScheduled = false;
 
   function getDeviceParams() {
     const ua = navigator.userAgent;
@@ -129,7 +136,19 @@
 
     if (info.awemeId) awemeAuthorCache.set(String(info.awemeId), info);
     awemeAuthorCache.set(secUid, info);
+    trimCache(awemeAuthorCache);
     if (roomId) cacheLiveAuthor(author, roomId);
+  }
+
+  function trimCache(map) {
+    if (map.size <= MAX_CACHE_SIZE) return;
+    const extra = map.size - MAX_CACHE_SIZE;
+    const keys = map.keys();
+    for (let i = 0; i < extra; i++) {
+      const next = keys.next();
+      if (next.done) break;
+      map.delete(next.value);
+    }
   }
 
   function cacheLiveAuthor(user, roomId) {
@@ -147,60 +166,96 @@
 
     liveAuthorCache.set(secUid, info);
     if (info.roomId) liveAuthorCache.set(String(info.roomId), info);
+    trimCache(liveAuthorCache);
   }
 
-  function walkJson(node, visitor) {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) {
-      node.forEach((item) => walkJson(item, visitor));
-      return;
-    }
-    visitor(node);
-    Object.values(node).forEach((value) => walkJson(value, visitor));
+  function shouldProcessNetworkUrl(url) {
+    return NETWORK_URL_RE.test(String(url || ''));
+  }
+
+  function getFetchRequestUrl(args) {
+    const input = args[0];
+    if (typeof input === 'string') return input;
+    if (input instanceof Request) return input.url;
+    return '';
+  }
+
+  function schedulePayloadProcess(data) {
+    if (!data || typeof data !== 'object') return;
+    payloadQueue.push(data);
+    if (payloadDrainScheduled) return;
+    payloadDrainScheduled = true;
+
+    const drain = () => {
+      const batch = payloadQueue.splice(0, 2);
+      for (const item of batch) {
+        extractAuthorsFromPayload(item);
+      }
+      if (payloadQueue.length) {
+        const scheduler = window.requestIdleCallback || ((cb) => setTimeout(cb, 32));
+        scheduler(drain);
+      } else {
+        payloadDrainScheduled = false;
+      }
+    };
+
+    const scheduler = window.requestIdleCallback || ((cb) => setTimeout(cb, 16));
+    scheduler(drain);
   }
 
   function extractAuthorsFromPayload(data) {
-    walkJson(data, (obj) => {
-      if (obj.aweme_list && Array.isArray(obj.aweme_list)) {
-        obj.aweme_list.forEach(cacheAwemeAuthor);
+    if (!data || typeof data !== 'object') return;
+
+    const lists = [data.aweme_list, data.data?.aweme_list, data.data?.data];
+    for (const list of lists) {
+      if (Array.isArray(list)) {
+        for (let i = 0; i < list.length; i++) {
+          cacheAwemeAuthor(list[i]);
+        }
       }
-      if (obj.aweme_id && obj.author) {
-        cacheAwemeAuthor(obj);
-      }
-      if (obj.author && (obj.cell_room || obj.room_id)) {
-        cacheAwemeAuthor(obj);
-      }
-      if (obj.data?.data?.[0]?.author) {
-        cacheAwemeAuthor(obj.data.data[0]);
-      }
-      if (obj.data?.user && obj.status_code === 0) {
-        const user = obj.data.user;
-        cacheLiveAuthor(user, obj.data.room_id || user.room_id);
-      }
-      if (obj.owner) cacheLiveAuthor(obj.owner, obj.room_id || obj.id);
-      if (obj.anchor) cacheLiveAuthor(obj.anchor, obj.room_id || obj.id);
-      if (obj.room?.owner) cacheLiveAuthor(obj.room.owner, obj.room.id || obj.room.room_id);
-      if (obj.room?.anchor) cacheLiveAuthor(obj.room.anchor, obj.room.id || obj.room.room_id);
-      if (obj.data?.user) cacheLiveAuthor(obj.data.user, obj.data.room_id);
-      if (obj.data?.owner) cacheLiveAuthor(obj.data.owner, obj.data.room_id);
-      if (obj.user_profile?.base_info) {
-        cacheLiveAuthor(obj.user_profile.base_info);
-      }
-    });
+    }
+
+    if (data.aweme_detail?.author) cacheAwemeAuthor(data.aweme_detail);
+    if (data.aweme_id && data.author) cacheAwemeAuthor(data);
+    if (data.data?.aweme_detail?.author) cacheAwemeAuthor(data.data.aweme_detail);
+
+    const roomUser = data.data?.user || data.data?.owner;
+    if (roomUser) {
+      cacheLiveAuthor(roomUser, data.data?.room_id || roomUser.room_id);
+    }
+
+    if (data.user_profile?.base_info) {
+      cacheLiveAuthor(data.user_profile.base_info);
+    }
+  }
+
+  function processResponseText(url, text) {
+    if (!shouldProcessNetworkUrl(url)) return;
+    if (!text || text.length > MAX_JSON_BYTES) return;
+    if (!text.includes('aweme') && !text.includes('sec_uid') && !text.includes('room_id')) {
+      return;
+    }
+
+    try {
+      schedulePayloadProcess(JSON.parse(text));
+    } catch (_) {}
   }
 
   function hookFetch() {
     const originalFetch = window.fetch;
     window.fetch = async function (...args) {
+      const requestUrl = getFetchRequestUrl(args);
+      const shouldTrack = shouldProcessNetworkUrl(requestUrl);
       const response = await originalFetch.apply(this, args);
-      try {
-        const clone = response.clone();
-        const contentType = clone.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-          const data = await clone.json();
-          extractAuthorsFromPayload(data);
-        }
-      } catch (_) {}
+
+      if (shouldTrack) {
+        response
+          .clone()
+          .text()
+          .then((text) => processResponseText(requestUrl, text))
+          .catch(() => {});
+      }
+
       return response;
     };
   }
@@ -215,16 +270,35 @@
     };
 
     XMLHttpRequest.prototype.send = function (...args) {
-      this.addEventListener('load', function () {
-        try {
-          const contentType = this.getResponseHeader('content-type') || '';
-          if (!contentType.includes('application/json')) return;
-          const data = JSON.parse(this.responseText);
-          extractAuthorsFromPayload(data);
-        } catch (_) {}
-      });
+      const requestUrl = this.__douyinBlockUrl || '';
+      const shouldTrack = shouldProcessNetworkUrl(requestUrl);
+
+      if (shouldTrack) {
+        this.addEventListener('load', function onLoad() {
+          this.removeEventListener('load', onLoad);
+          try {
+            const contentType = this.getResponseHeader('content-type') || '';
+            if (!contentType.includes('json')) return;
+            processResponseText(requestUrl, this.responseText);
+          } catch (_) {}
+        });
+      }
+
       return originalSend.apply(this, args);
     };
+  }
+
+  function findAwemeDetailInRender(json) {
+    if (!json || typeof json !== 'object') return null;
+    if (json.aweme_detail?.author) return json.aweme_detail;
+
+    for (const value of Object.values(json)) {
+      if (!value || typeof value !== 'object') continue;
+      if (value.aweme_detail?.author) return value.aweme_detail;
+      if (value.aweme?.detail?.author) return value.aweme.detail;
+    }
+
+    return null;
   }
 
   function postBlockRequest(url, bodyString) {
@@ -833,15 +907,12 @@
     if (renderData?.textContent) {
       try {
         const json = JSON.parse(decodeURIComponent(renderData.textContent));
-        let found = null;
-        walkJson(json, (obj) => {
-          if (found) return;
-          if (obj.aweme_detail?.author) {
-            cacheAwemeAuthor(obj.aweme_detail);
-            found = awemeAuthorCache.get(awemeId) || null;
-          }
-        });
-        if (found) return { ...found, source: 'render-data' };
+        const detail = findAwemeDetailInRender(json);
+        if (detail) {
+          cacheAwemeAuthor(detail);
+          const found = awemeAuthorCache.get(awemeId);
+          if (found) return { ...found, source: 'render-data' };
+        }
       } catch (_) {}
     }
 

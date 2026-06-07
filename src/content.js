@@ -2,6 +2,8 @@ const MESSAGE_SOURCE = 'douyin-block-extension';
 let injectReady = false;
 let requestCounter = 0;
 let currentAuthorState = { secUid: '', blocked: false };
+let refreshInFlight = false;
+let lastRefreshAt = 0;
 
 function injectPageScript() {
   if (document.getElementById('douyin-block-inject')) return;
@@ -14,6 +16,15 @@ function injectPageScript() {
     script.remove();
   };
   (document.head || document.documentElement).appendChild(script);
+}
+
+async function ensureInjectReady() {
+  if (injectReady) return;
+  injectPageScript();
+  for (let i = 0; i < 30; i++) {
+    if (injectReady) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 function callPage(action, payload) {
@@ -66,8 +77,7 @@ function showToast(message, type = 'info') {
 }
 
 async function getCurrentAuthor() {
-  if (!injectReady) injectPageScript();
-  await new Promise((r) => setTimeout(r, 300));
+  await ensureInjectReady();
   const author = await callPage('get-author');
   if (!author?.secUid) return author;
 
@@ -170,13 +180,44 @@ function updateFloatingButton(blocked) {
   }
 }
 
-async function refreshFloatingButtonState() {
+async function refreshFloatingButtonState(force = false) {
+  const now = Date.now();
+  if (!force) {
+    if (refreshInFlight || now - lastRefreshAt < 8000) return;
+    if (document.hidden) return;
+  }
+
+  refreshInFlight = true;
+  lastRefreshAt = now;
+
   try {
     const author = await getCurrentAuthor();
     if (author?.secUid) {
       updateFloatingButton(!!author.blocked);
     }
-  } catch (_) {}
+  } catch (_) {
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+function setupLazyRefresh() {
+  let scrollTimer = null;
+
+  window.addEventListener(
+    'scroll',
+    () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => refreshFloatingButtonState(false), 1200);
+    },
+    { passive: true }
+  );
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      refreshFloatingButtonState(false);
+    }
+  });
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -225,9 +266,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 function init() {
   injectPageScript();
   createFloatingButton();
-  refreshFloatingButtonState();
-
-  setInterval(refreshFloatingButtonState, 5000);
+  setupLazyRefresh();
 }
 
 if (document.readyState === 'loading') {
