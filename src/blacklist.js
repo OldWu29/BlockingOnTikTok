@@ -38,7 +38,7 @@ function waitForTabComplete(tabId) {
 }
 
 async function ensureDouyinTab() {
-  const tabs = await chrome.tabs.query({ url: 'https://www.douyin.com/*' });
+  const tabs = await chrome.tabs.query({ url: ['https://www.douyin.com/*', 'https://live.douyin.com/*'] });
   if (tabs.length > 0) return tabs[0];
 
   const tab = await chrome.tabs.create({ url: 'https://www.douyin.com', active: false });

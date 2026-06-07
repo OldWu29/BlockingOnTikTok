@@ -5,3 +5,5 @@ Thumbs.db
 *.pem
 dist/
 node_modules/
+docs/store-assets/
+/docs/partner-center-submission.zh-CN.md

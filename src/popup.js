@@ -22,8 +22,8 @@ async function getActiveTab() {
 async function sendToContent(action, extra = {}) {
   const tab = await getActiveTab();
   if (!tab?.id) throw new Error('未找到当前标签页');
-  if (!tab.url?.includes('douyin.com')) {
-    throw new Error('请先打开抖音网页版');
+  if (!/douyin\.com/.test(tab.url || '')) {
+    throw new Error('请先打开抖音网页版或直播间');
   }
 
   return chrome.tabs.sendMessage(tab.id, {

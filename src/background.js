@@ -1,6 +1,6 @@
 chrome.commands.onCommand.addListener(async (command) => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !tab.url?.includes('douyin.com')) return;
+  if (!tab?.id || !/douyin\.com/.test(tab.url || '')) return;
 
   const action = command === 'unblock-author' ? 'unblock' : 'block';
 

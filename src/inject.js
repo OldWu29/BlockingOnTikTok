@@ -5,6 +5,7 @@
   const SEC_UID_RE = /MS4wLj[A-Za-z0-9_\-]{15,}/;
 
   const awemeAuthorCache = new Map();
+  const liveAuthorCache = new Map();
 
   function getDeviceParams() {
     const ua = navigator.userAgent;
@@ -109,15 +110,43 @@
     const secUid = author.sec_uid || author.secUid;
     if (!secUid) return;
 
+    const roomId =
+      aweme.cell_room?.room_id ||
+      aweme.cell_room?.id ||
+      aweme.room_id ||
+      author.room_id ||
+      author.room_id_str ||
+      '';
+
     const info = {
       secUid,
-      userId: author.uid || author.user_id || '',
+      userId: author.uid || author.user_id || author.id || '',
       nickname: author.nickname || '',
-      awemeId: aweme.aweme_id || aweme.awemeId || ''
+      awemeId: aweme.aweme_id || aweme.awemeId || '',
+      roomId: roomId ? String(roomId) : '',
+      isLive: !!(roomId || aweme.cell_room || aweme.live_room || author.live_status)
     };
 
     if (info.awemeId) awemeAuthorCache.set(String(info.awemeId), info);
     awemeAuthorCache.set(secUid, info);
+    if (roomId) cacheLiveAuthor(author, roomId);
+  }
+
+  function cacheLiveAuthor(user, roomId) {
+    if (!user || typeof user !== 'object') return;
+    const secUid = user.sec_uid || user.secUid || user.sec_user_id || user.secUserId;
+    if (!secUid || !SEC_UID_RE.test(secUid)) return;
+
+    const info = {
+      secUid,
+      userId: user.uid || user.user_id || user.id || user.id_str || '',
+      nickname: user.nickname || user.nick_name || user.name || '主播',
+      roomId: roomId || user.room_id || user.roomId || '',
+      isLive: true
+    };
+
+    liveAuthorCache.set(secUid, info);
+    if (info.roomId) liveAuthorCache.set(String(info.roomId), info);
   }
 
   function walkJson(node, visitor) {
@@ -137,6 +166,25 @@
       }
       if (obj.aweme_id && obj.author) {
         cacheAwemeAuthor(obj);
+      }
+      if (obj.author && (obj.cell_room || obj.room_id)) {
+        cacheAwemeAuthor(obj);
+      }
+      if (obj.data?.data?.[0]?.author) {
+        cacheAwemeAuthor(obj.data.data[0]);
+      }
+      if (obj.data?.user && obj.status_code === 0) {
+        const user = obj.data.user;
+        cacheLiveAuthor(user, obj.data.room_id || user.room_id);
+      }
+      if (obj.owner) cacheLiveAuthor(obj.owner, obj.room_id || obj.id);
+      if (obj.anchor) cacheLiveAuthor(obj.anchor, obj.room_id || obj.id);
+      if (obj.room?.owner) cacheLiveAuthor(obj.room.owner, obj.room.id || obj.room.room_id);
+      if (obj.room?.anchor) cacheLiveAuthor(obj.room.anchor, obj.room.id || obj.room.room_id);
+      if (obj.data?.user) cacheLiveAuthor(obj.data.user, obj.data.room_id);
+      if (obj.data?.owner) cacheLiveAuthor(obj.data.owner, obj.data.room_id);
+      if (obj.user_profile?.base_info) {
+        cacheLiveAuthor(obj.user_profile.base_info);
       }
     });
   }
@@ -244,71 +292,351 @@
     };
   }
 
-  function getAuthorFromDom() {
-    const container = findActiveVideoContainer();
+  const roomFetchCache = new Map();
+
+  function getBrowserVersion() {
+    const ua = navigator.userAgent;
+    const edgeMatch = ua.match(/Edg\/(\d+)/);
+    if (edgeMatch) return edgeMatch[1] + '.0.0.0';
+    const chromeMatch = ua.match(/Chrome\/(\d+)/);
+    if (chromeMatch) return chromeMatch[1] + '.0.0.0';
+    return '120.0.0.0';
+  }
+
+  function extractRoomIdFromHref(href) {
+    if (!href) return null;
+    const queryMatch = href.match(/room_id=(\d+)/);
+    if (queryMatch) return queryMatch[1];
+    const pathMatch = href.match(/live\.douyin\.com\/(\d+)/);
+    if (pathMatch) return pathMatch[1];
+    return null;
+  }
+
+  function extractRoomIdFromContainer(container) {
     if (!container) return null;
 
-    const link = container.querySelector('a[href*="/user/"]');
-    if (link) {
-      const href = link.getAttribute('href') || '';
-      const match = href.match(/\/user\/([^?/#]+)/) || href.match(SEC_UID_RE);
-      if (match) {
-        const secUid = match[1].includes('MS4wLj') ? match[1] : match[0];
-        const nickname =
-          link.getAttribute('title') ||
-          link.textContent?.trim() ||
-          container.querySelector('[data-e2e="video-author-name"]')?.textContent?.trim() ||
-          '';
-        const cached = awemeAuthorCache.get(secUid);
-        return {
-          secUid,
-          userId: cached?.userId || '',
-          nickname: nickname || cached?.nickname || '未知作者',
-          source: 'dom'
-        };
-      }
+    const attrRoomId =
+      container.getAttribute('data-live-room-id') ||
+      container.getAttribute('data-room-id') ||
+      container.querySelector('[data-live-room-id]')?.getAttribute('data-live-room-id') ||
+      container.querySelector('[data-room-id]')?.getAttribute('data-room-id');
+
+    if (attrRoomId) return String(attrRoomId);
+
+    const liveLinks = container.querySelectorAll('a[href*="live.douyin.com"]');
+    for (const link of liveLinks) {
+      const roomId = extractRoomIdFromHref(link.getAttribute('href') || '');
+      if (roomId) return roomId;
     }
 
-    const dataSecUid =
-      container.getAttribute('data-sec-uid') ||
-      container.querySelector('[data-sec-uid]')?.getAttribute('data-sec-uid');
-    if (dataSecUid && SEC_UID_RE.test(dataSecUid)) {
-      const cached = awemeAuthorCache.get(dataSecUid);
+    const avatarLink = container.querySelector('a[data-e2e="video-avatar"]');
+    if (avatarLink) {
+      const roomId = extractRoomIdFromHref(avatarLink.getAttribute('href') || '');
+      if (roomId) return roomId;
+    }
+
+    return null;
+  }
+
+  async function fetchUserInfoFromLiveRoom(roomId) {
+    if (!roomId) return null;
+
+    const cacheKey = String(roomId);
+    if (liveAuthorCache.has(cacheKey)) {
+      return { ...liveAuthorCache.get(cacheKey), source: 'live-room-cache' };
+    }
+    if (roomFetchCache.has(cacheKey)) {
+      return roomFetchCache.get(cacheKey);
+    }
+
+    const task = (async () => {
+      const params = new URLSearchParams({
+        aid: '6383',
+        app_name: 'douyin_web',
+        live_id: '1',
+        device_platform: 'web',
+        language: 'zh-CN',
+        enter_from: 'web_homepage_hot',
+        cookie_enabled: 'true',
+        screen_width: String(screen.width),
+        screen_height: String(screen.height),
+        browser_language: navigator.language || 'zh-CN',
+        browser_platform: navigator.platform || 'Win32',
+        browser_name: 'Edge',
+        browser_version: getBrowserVersion(),
+        os_name: 'Windows',
+        os_version: '10',
+        web_rid: cacheKey,
+        room_id_str: cacheKey,
+        enter_source: '',
+        is_need_double_stream: 'false',
+        msToken: readCookie('msToken') || generateMsToken()
+      });
+
+      const url = `https://live.douyin.com/webcast/room/web/enter/?${params.toString()}`;
+
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            Referer: 'https://www.douyin.com/',
+            Origin: 'https://www.douyin.com'
+          }
+        });
+
+        if (!response.ok) return null;
+
+        const data = await response.json();
+        const user = data?.data?.user || data?.data?.owner;
+        if (!user?.sec_uid) return null;
+
+        cacheLiveAuthor(user, cacheKey);
+        return {
+          secUid: user.sec_uid,
+          userId: user.id_str || user.uid || user.id || '',
+          nickname: user.nickname || '主播',
+          roomId: cacheKey,
+          isLive: true,
+          source: 'live-room-api'
+        };
+      } catch (_) {
+        return null;
+      } finally {
+        roomFetchCache.delete(cacheKey);
+      }
+    })();
+
+    roomFetchCache.set(cacheKey, task);
+    return task;
+  }
+
+  function isLiveStreamPage() {
+    return location.hostname === 'live.douyin.com' || /^\/live(\/|$)/.test(location.pathname);
+  }
+
+  function containerHasLiveBadge(container) {
+    if (!container) return false;
+    if (container.querySelector('a[href*="live.douyin.com"]')) return true;
+    if (container.querySelector('img[alt="LiveIcon"], img[src*="avatar-live"], img[src*="live"]')) {
+      return true;
+    }
+    return !!extractRoomIdFromContainer(container);
+  }
+
+  function getAuthorFromContainerCache(container) {
+    if (!container) return null;
+
+    const awemeId =
+      container.getAttribute('data-aweme-id') ||
+      container.querySelector('[data-aweme-id]')?.getAttribute('data-aweme-id');
+
+    if (awemeId && awemeAuthorCache.has(String(awemeId))) {
+      return { ...awemeAuthorCache.get(String(awemeId)), source: 'aweme-cache' };
+    }
+
+    const roomId = extractRoomIdFromContainer(container);
+    if (roomId && liveAuthorCache.has(String(roomId))) {
+      return { ...liveAuthorCache.get(String(roomId)), source: 'room-cache' };
+    }
+
+    return null;
+  }
+
+  function getAuthorFromVideoAvatar(container) {
+    if (!container) return null;
+
+    const avatarLink = container.querySelector('a[data-e2e="video-avatar"]');
+    if (!avatarLink) return null;
+
+    const href = avatarLink.getAttribute('href') || '';
+    const userMatch = href.match(/\/user\/([^?/#]+)/);
+    if (userMatch && SEC_UID_RE.test(userMatch[1])) {
+      const secUid = userMatch[1];
+      const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
       return {
-        secUid: dataSecUid,
+        secUid,
         userId: cached?.userId || '',
-        nickname: cached?.nickname || '未知作者',
-        source: 'dom-data'
+        nickname:
+          avatarLink.getAttribute('title') ||
+          avatarLink.textContent?.replace(/^@/, '').trim() ||
+          cached?.nickname ||
+          '未知作者',
+        isLive: containerHasLiveBadge(container),
+        source: 'video-avatar'
       };
     }
 
     return null;
   }
 
-  function findActiveVideoContainer() {
-    const videos = document.querySelectorAll('video');
-    for (const video of videos) {
-      if (video.paused && video.currentTime <= 0) continue;
-      const rect = video.getBoundingClientRect();
-      if (rect.height < 100) continue;
-      if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+  async function resolveAuthorFromContainer(container, source) {
+    if (!container) return null;
 
-      let parent = video.parentElement;
-      for (let depth = 0; parent && depth < 12; depth++) {
-        if (parent.querySelector('[data-e2e="video-player-digg"], a[href*="/user/"]')) {
+    const cached = getAuthorFromContainerCache(container);
+    if (cached) return cached;
+
+    const fromAvatar = getAuthorFromVideoAvatar(container);
+    if (fromAvatar) return fromAvatar;
+
+    const fromDom = extractAuthorFromContainer(container, source);
+    if (fromDom) return fromDom;
+
+    const roomId = extractRoomIdFromContainer(container);
+    if (roomId) {
+      return fetchUserInfoFromLiveRoom(roomId);
+    }
+
+    return null;
+  }
+
+  function extractAuthorFromContainer(container, source) {
+    if (!container) return null;
+
+    const userLinks = container.querySelectorAll('a[href*="/user/"]');
+    for (const link of userLinks) {
+      const href = link.getAttribute('href') || '';
+      const match = href.match(/\/user\/([^?/#]+)/) || href.match(SEC_UID_RE);
+      if (!match) continue;
+
+      const secUid = match[1]?.includes('MS4wLj') ? match[1] : match[0];
+      if (!SEC_UID_RE.test(secUid)) continue;
+
+      const nickname =
+        link.getAttribute('title') ||
+        link.textContent?.replace(/^@/, '').trim() ||
+        container.querySelector('[data-e2e="video-author-name"], [data-e2e="live-avatar"]')?.textContent?.trim() ||
+        '';
+
+      const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
+      return {
+        secUid,
+        userId: cached?.userId || '',
+        nickname: nickname || cached?.nickname || '未知作者',
+        isLive: containerHasLiveBadge(container),
+        source
+      };
+    }
+
+    const dataSecUid =
+      container.getAttribute('data-sec-uid') ||
+      container.getAttribute('data-anchor-sec-uid') ||
+      container.querySelector('[data-sec-uid], [data-anchor-sec-uid], [data-user-sec-uid]')?.getAttribute(
+        'data-sec-uid'
+      ) ||
+      container.querySelector('[data-anchor-sec-uid]')?.getAttribute('data-anchor-sec-uid');
+
+    if (dataSecUid && SEC_UID_RE.test(dataSecUid)) {
+      const cached = awemeAuthorCache.get(dataSecUid) || liveAuthorCache.get(dataSecUid);
+      return {
+        secUid: dataSecUid,
+        userId: cached?.userId || '',
+        nickname: cached?.nickname || '主播',
+        isLive: true,
+        source: source + '-data'
+      };
+    }
+
+    const secUidEls = container.querySelectorAll('[data-sec-uid], [data-author-sec-uid]');
+    for (const el of secUidEls) {
+      const secUid = el.getAttribute('data-sec-uid') || el.getAttribute('data-author-sec-uid');
+      if (secUid && SEC_UID_RE.test(secUid)) {
+        const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
+        return {
+          secUid,
+          userId: cached?.userId || '',
+          nickname: cached?.nickname || '未知作者',
+          isLive: containerHasLiveBadge(container),
+          source: source + '-attr'
+        };
+      }
+    }
+
+    const roomId = extractRoomIdFromContainer(container);
+    if (roomId && liveAuthorCache.has(String(roomId))) {
+      return { ...liveAuthorCache.get(String(roomId)), source: source + '-room-cache' };
+    }
+
+    return null;
+  }
+
+  function findClosestToViewportCenter(elements) {
+    const centerY = window.innerHeight / 2;
+    let best = null;
+    let bestDist = Infinity;
+
+    for (const el of elements) {
+      const rect = el.getBoundingClientRect();
+      if (rect.height < 60 || rect.bottom < 0 || rect.top > window.innerHeight) continue;
+      const dist = Math.abs(rect.top + rect.height / 2 - centerY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = el;
+      }
+    }
+
+    return best;
+  }
+
+  function findActiveLiveContainer() {
+    const liveCards = document.querySelectorAll('[data-e2e="feed-live"]');
+    const visibleCard = findClosestToViewportCenter(liveCards);
+    if (visibleCard) return visibleCard;
+
+    const liveRoomEls = document.querySelectorAll('[data-live-room-id], [data-room-id]');
+    const visibleRoom = findClosestToViewportCenter(liveRoomEls);
+    if (visibleRoom) return visibleRoom;
+
+    const playerControls = document.querySelector('.douyin-player-controls');
+    if (playerControls) {
+      const rect = playerControls.getBoundingClientRect();
+      if (rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0) {
+        let parent = playerControls.parentElement;
+        for (let depth = 0; parent && depth < 10; depth++) {
+          if (
+            parent.querySelector('[data-e2e="feed-live"], a[href*="/user/"], [data-live-room-id]')
+          ) {
+            return parent;
+          }
+          parent = parent.parentElement;
+        }
+        return playerControls.parentElement;
+      }
+    }
+
+    return null;
+  }
+
+  function findActiveVideoContainer() {
+    const diggButtons = document.querySelectorAll('[data-e2e="video-player-digg"]');
+    const visibleDigg = findClosestToViewportCenter(diggButtons);
+    if (visibleDigg) {
+      let parent = visibleDigg.parentElement;
+      for (let depth = 0; parent && depth < 14; depth++) {
+        if (
+          parent.querySelector(
+            'video, a[data-e2e="video-avatar"], a[href*="/user/"], a[href*="live.douyin.com"]'
+          )
+        ) {
           return parent;
         }
         parent = parent.parentElement;
       }
     }
 
-    const diggButtons = document.querySelectorAll('[data-e2e="video-player-digg"]');
-    for (const diggBtn of diggButtons) {
-      const rect = diggBtn.getBoundingClientRect();
-      if (rect.top < window.innerHeight * 0.2 || rect.top > window.innerHeight * 0.85) continue;
-      let parent = diggBtn.parentElement;
-      for (let depth = 0; parent && depth < 12; depth++) {
-        if (parent.querySelector('video, a[href*="/user/"]')) return parent;
+    const videos = document.querySelectorAll('video');
+    const visibleVideo = findClosestToViewportCenter(videos);
+    if (visibleVideo) {
+      let parent = visibleVideo.parentElement;
+      for (let depth = 0; parent && depth < 14; depth++) {
+        if (
+          parent.querySelector(
+            '[data-e2e="video-player-digg"], a[data-e2e="video-avatar"], a[href*="/user/"], a[href*="live.douyin.com"]'
+          )
+        ) {
+          return parent;
+        }
         parent = parent.parentElement;
       }
     }
@@ -316,7 +644,183 @@
     return null;
   }
 
-  function getAuthorFromVideoPage() {
+  async function getAuthorFromDom() {
+    const videoContainer = findActiveVideoContainer();
+    if (videoContainer) {
+      const videoAuthor = await resolveAuthorFromContainer(videoContainer, 'video-dom');
+      if (videoAuthor) return videoAuthor;
+    }
+
+    const liveContainer = findActiveLiveContainer();
+    if (liveContainer) {
+      const liveAuthor = await resolveAuthorFromContainer(liveContainer, 'live-dom');
+      if (liveAuthor) return liveAuthor;
+    }
+
+    return null;
+  }
+
+  function getAuthorFromLiveState() {
+    const room = window.__INITIAL_STATE__?.room;
+    if (!room) return null;
+
+    const owner = room.owner || room.anchor;
+    if (!owner) return null;
+
+    const secUid = owner.sec_uid || owner.secUid;
+    if (!secUid) return null;
+
+    cacheLiveAuthor(owner, room.id || room.room_id);
+    return {
+      secUid,
+      userId: owner.uid || owner.user_id || '',
+      nickname: owner.nickname || owner.short_id || '主播',
+      isLive: true,
+      source: 'initial-state'
+    };
+  }
+
+  async function getAuthorFromLivePage() {
+    if (!isLiveStreamPage()) return null;
+
+    const fromState = getAuthorFromLiveState();
+    if (fromState) return fromState;
+
+    const pageUrl = location.href;
+    let secAnchorId = null;
+    const anchorIdMatch = pageUrl.match(/anchor_id=(\d+)/);
+    const anchorId = anchorIdMatch ? anchorIdMatch[1] : null;
+
+    const urlSecMatch = pageUrl.match(/sec_anchor_id=([^&\s]+)/);
+    if (urlSecMatch) secAnchorId = decodeURIComponent(urlSecMatch[1]);
+
+    if (!secAnchorId) {
+      for (const iframe of document.querySelectorAll('iframe')) {
+        const match = (iframe.src || '').match(/sec_anchor_id=([^&\s]+)/);
+        if (match) {
+          secAnchorId = decodeURIComponent(match[1]);
+          break;
+        }
+      }
+    }
+
+    if (!secAnchorId) {
+      for (const script of document.querySelectorAll('script')) {
+        const content = script.textContent || '';
+        const match =
+          content.match(/sec_anchor_id["\s:]+["']?([^"'&\s\\]+)/) ||
+          content.match(/secUid["\s:]+["']?([^"'&\s]+)/);
+        if (match && SEC_UID_RE.test(match[1])) {
+          secAnchorId = match[1];
+          break;
+        }
+      }
+    }
+
+    if (secAnchorId && SEC_UID_RE.test(secAnchorId)) {
+      return {
+        secUid: secAnchorId,
+        userId: anchorId || '',
+        nickname: '主播',
+        isLive: true,
+        source: 'live-url'
+      };
+    }
+
+    if (anchorId) {
+      try {
+        const profileUrl =
+          `https://live.douyin.com/webcast/user/profile/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&anchor_id=${anchorId}` +
+          (secAnchorId ? `&sec_anchor_id=${encodeURIComponent(secAnchorId)}` : '') +
+          `&msToken=${encodeURIComponent(readCookie('msToken') || generateMsToken())}`;
+
+        const response = await fetch(profileUrl, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            Referer: pageUrl
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const baseInfo = data?.data?.user_profile?.base_info;
+          if (baseInfo?.sec_uid) {
+            cacheLiveAuthor(baseInfo);
+            return {
+              secUid: baseInfo.sec_uid,
+              userId: baseInfo.uid || baseInfo.id || anchorId,
+              nickname: baseInfo.nickname || '主播',
+              isLive: true,
+              source: 'live-api'
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
+    const sidePanelAuthor = extractAuthorFromContainer(document.body, 'live-page');
+    if (sidePanelAuthor) return sidePanelAuthor;
+
+    return null;
+  }
+
+  function getAuthorFromLiveFeed() {
+    const fromState = getAuthorFromLiveState();
+    if (fromState) return fromState;
+
+    const playerEl =
+      document.querySelector('[data-room-id]') ||
+      document.querySelector('[data-anchor-sec-uid]') ||
+      document.querySelector('[data-live-room-id]');
+
+    if (playerEl) {
+      const secUid =
+        playerEl.getAttribute('data-anchor-sec-uid') ||
+        playerEl.getAttribute('data-sec-uid');
+      const roomId =
+        playerEl.getAttribute('data-room-id') || playerEl.getAttribute('data-live-room-id');
+
+      if (secUid && SEC_UID_RE.test(secUid)) {
+        return {
+          secUid,
+          userId: playerEl.getAttribute('data-anchor-uid') || playerEl.getAttribute('data-user-id') || '',
+          nickname: '主播',
+          isLive: true,
+          source: 'live-player-data'
+        };
+      }
+
+      if (roomId && liveAuthorCache.has(String(roomId))) {
+        return { ...liveAuthorCache.get(String(roomId)), source: 'live-player-cache' };
+      }
+    }
+
+    return null;
+  }
+
+  function getAuthorFromUserPage() {
+    const match = location.pathname.match(/\/user\/([^/?#]+)/);
+    if (!match || !SEC_UID_RE.test(match[1])) return null;
+
+    const secUid = match[1];
+    const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
+    const nickname =
+      document.querySelector('[data-e2e="user-title"], h1')?.textContent?.trim() ||
+      cached?.nickname ||
+      '未知作者';
+
+    return {
+      secUid,
+      userId: cached?.userId || '',
+      nickname,
+      isLive: containerHasLiveBadge(document.body),
+      source: 'user-page'
+    };
+  }
+
+  async function getAuthorFromVideoPage() {
     const match = location.pathname.match(/\/video\/(\d+)/);
     if (!match) return null;
 
@@ -341,25 +845,40 @@
       } catch (_) {}
     }
 
-    const userLink = document.querySelector('a[href*="/user/"]');
-    if (userLink) {
-      const href = userLink.getAttribute('href') || '';
-      const secMatch = href.match(/\/user\/([^?/#]+)/);
-      if (secMatch) {
-        return {
-          secUid: secMatch[1],
-          userId: '',
-          nickname: userLink.textContent?.trim() || '未知作者',
-          source: 'video-page'
-        };
-      }
-    }
+    const detailContainer =
+      document.querySelector('[data-e2e="video-detail"]') ||
+      document.querySelector('[data-e2e="browse-video"]') ||
+      document.body;
+
+    const fromDetail = await resolveAuthorFromContainer(detailContainer, 'video-page');
+    if (fromDetail) return fromDetail;
 
     return null;
   }
 
-  function getCurrentAuthor() {
-    return getAuthorFromDom() || getAuthorFromVideoPage();
+  async function getCurrentAuthor() {
+    const fromDom = await getAuthorFromDom();
+    if (fromDom) return fromDom;
+
+    const fromFeed = getAuthorFromLiveFeed();
+    if (fromFeed) return fromFeed;
+
+    const fromLivePage = await getAuthorFromLivePage();
+    if (fromLivePage) return fromLivePage;
+
+    const fromVideoPage = await getAuthorFromVideoPage();
+    if (fromVideoPage) return fromVideoPage;
+
+    const fromUserPage = getAuthorFromUserPage();
+    if (fromUserPage) return fromUserPage;
+
+    const visibleContainer = findActiveVideoContainer() || findActiveLiveContainer();
+    const roomId = extractRoomIdFromContainer(visibleContainer);
+    if (roomId) {
+      return fetchUserInfoFromLiveRoom(roomId);
+    }
+
+    return null;
   }
 
   window.addEventListener('message', async (event) => {
@@ -371,7 +890,7 @@
 
     try {
       if (action === 'get-author') {
-        const author = getCurrentAuthor();
+        const author = await getCurrentAuthor();
         window.postMessage(
           { source: 'douyin-block-extension', action: 'get-author-result', requestId, author },
           '*'

@@ -22,7 +22,7 @@ function callPage(action, payload) {
     const timeout = setTimeout(() => {
       window.removeEventListener('message', onMessage);
       reject(new Error('请求超时，请刷新页面后重试'));
-    }, 15000);
+    }, 20000);
 
     function onMessage(event) {
       if (event.source !== window || !event.data || event.data.source !== MESSAGE_SOURCE) return;
@@ -110,7 +110,7 @@ async function blockUserById(secUid, userId, nickname, unblock = false) {
 async function blockCurrentAuthor(unblock = false) {
   const author = await getCurrentAuthor();
   if (!author?.secUid) {
-    showToast('未识别到当前视频作者，请先播放一个视频', 'error');
+    showToast('未识别到作者。若对方正在直播，请稍等后重试', 'error');
     return { success: false, error: '未找到作者' };
   }
 

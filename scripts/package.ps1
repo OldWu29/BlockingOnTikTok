@@ -54,6 +54,9 @@ function New-ExtensionPackage {
 
     Copy-Item (Join-Path $ProjectRoot "manifest.json") $StageDir
     Copy-Item (Join-Path $ProjectRoot "src") (Join-Path $StageDir "src") -Recurse
+    if (Test-Path (Join-Path $ProjectRoot "icons")) {
+        Copy-Item (Join-Path $ProjectRoot "icons") (Join-Path $StageDir "icons") -Recurse
+    }
 
     $manifestInStage = Join-Path $StageDir "manifest.json"
     if (-not (Test-Path $manifestInStage)) {
