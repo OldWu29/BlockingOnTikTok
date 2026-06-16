@@ -1,9 +1,53 @@
 const MESSAGE_SOURCE = 'douyin-block-extension';
+const RETRY_HINT = '请等待 1～2 秒后重试';
+const GENERIC_NICKNAMES = new Set(['未知作者', '未知用户', '主播', '该用户']);
 let injectReady = false;
 let requestCounter = 0;
 let currentAuthorState = { secUid: '', blocked: false };
 let refreshInFlight = false;
 let lastRefreshAt = 0;
+const nicknameFallbackFetched = new Set();
+
+function formatFailureMessage(message, fallback = '操作失败，请确认已登录抖音') {
+  const text = (message || fallback).replace(/[。．.!！]+$/, '');
+  if (text.includes('1～2 秒') || text.includes('1-2')) return text;
+  return `${text}。${RETRY_HINT}`;
+}
+
+function isGenericNickname(name) {
+  const value = String(name || '').trim();
+  return !value || GENERIC_NICKNAMES.has(value);
+}
+
+async function resolveDisplayName(secUid, userId, ...candidates) {
+  for (const name of candidates) {
+    if (!isGenericNickname(name)) return String(name).trim();
+  }
+
+  if (secUid) {
+    const existing = await BlacklistStorage.get(secUid);
+    if (existing?.nickname && !isGenericNickname(existing.nickname)) {
+      return existing.nickname;
+    }
+  }
+
+  for (const name of candidates) {
+    if (name && String(name).trim()) return String(name).trim();
+  }
+
+  if (secUid && !nicknameFallbackFetched.has(secUid)) {
+    nicknameFallbackFetched.add(secUid);
+    try {
+      await ensureInjectReady();
+      const result = await callPage('fetch-user-nickname', { secUid, userId });
+      if (result?.nickname && !isGenericNickname(result.nickname)) {
+        return String(result.nickname).trim();
+      }
+    } catch (_) {}
+  }
+
+  return '该用户';
+}
 
 function injectPageScript() {
   if (document.getElementById('douyin-block-inject')) return;
@@ -40,7 +84,11 @@ function callPage(action, payload) {
       if (event.data.requestId !== requestId) return;
 
       const resultAction =
-        action === 'get-author' ? 'get-author-result' : 'block-user-result';
+        action === 'get-author'
+          ? 'get-author-result'
+          : action === 'fetch-user-nickname'
+            ? 'fetch-user-nickname-result'
+            : 'block-user-result';
       if (event.data.action !== resultAction) return;
 
       clearTimeout(timeout);
@@ -48,6 +96,8 @@ function callPage(action, payload) {
 
       if (action === 'get-author') {
         resolve(event.data.author || null);
+      } else if (action === 'fetch-user-nickname') {
+        resolve(event.data.result || { nickname: '' });
       } else {
         resolve(event.data.result || { success: false, error: '无响应' });
       }
@@ -94,16 +144,18 @@ async function blockUserById(secUid, userId, nickname, unblock = false) {
   });
 
   if (result.success) {
+    const displayName = await resolveDisplayName(secUid, userId, result.nickname, nickname);
+
     if (unblock) {
       await BlacklistStorage.remove(secUid);
-      showToast(`已解除拉黑：${nickname || result.nickname || '该用户'}`, 'success');
+      showToast(`已解除拉黑：${displayName}`, 'success');
     } else {
       await BlacklistStorage.add({
         secUid,
         userId,
-        nickname: nickname || result.nickname || '未知用户'
+        nickname: displayName
       });
-      showToast(`已拉黑：${nickname || result.nickname || '该用户'}`, 'success');
+      showToast(`已拉黑：${displayName}`, 'success');
     }
 
     if (currentAuthorState.secUid === secUid) {
@@ -111,7 +163,7 @@ async function blockUserById(secUid, userId, nickname, unblock = false) {
       updateFloatingButton(!unblock);
     }
   } else {
-    showToast(result.error || '操作失败，请确认已登录抖音', 'error');
+    showToast(formatFailureMessage(result.error), 'error');
   }
 
   return result;
@@ -120,7 +172,7 @@ async function blockUserById(secUid, userId, nickname, unblock = false) {
 async function blockCurrentAuthor(unblock = false) {
   const author = await getCurrentAuthor();
   if (!author?.secUid) {
-    showToast('未识别到作者。若对方正在直播，请稍等后重试', 'error');
+    showToast(formatFailureMessage('未识别到作者，若对方正在直播请稍候', '未识别到作者'), 'error');
     return { success: false, error: '未找到作者' };
   }
 

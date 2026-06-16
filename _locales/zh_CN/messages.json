@@ -1,0 +1,22 @@
+{
+  "extensionName": {
+    "message": "抖音一键拉黑",
+    "description": "扩展名称"
+  },
+  "extensionDescription": {
+    "message": "在抖音网页版一键拉黑/解除拉黑当前视频作者，并管理黑名单",
+    "description": "扩展描述"
+  },
+  "blockCurrentAuthor": {
+    "message": "拉黑当前视频作者",
+    "description": "扩展图标悬停提示"
+  },
+  "blockAuthorCommand": {
+    "message": "拉黑当前视频作者",
+    "description": "拉黑快捷键说明"
+  },
+  "unblockAuthorCommand": {
+    "message": "解除拉黑当前视频作者",
+    "description": "解除拉黑快捷键说明"
+  }
+}

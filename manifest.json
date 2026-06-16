@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "抖音一键拉黑",
-  "version": "1.2.2",
-  "description": "在抖音网页版一键拉黑/解除拉黑当前视频作者，并管理黑名单",
+  "name": "__MSG_extensionName__",
+  "version": "1.2.3",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "zh_CN",
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
@@ -16,7 +17,7 @@
   ],
   "action": {
     "default_popup": "src/popup.html",
-    "default_title": "拉黑当前视频作者"
+    "default_title": "__MSG_blockCurrentAuthor__"
   },
   "options_ui": {
     "page": "src/blacklist.html",
@@ -41,13 +42,13 @@
       "suggested_key": {
         "default": "Ctrl+Shift+B"
       },
-      "description": "拉黑当前视频作者"
+      "description": "__MSG_blockAuthorCommand__"
     },
     "unblock-author": {
       "suggested_key": {
         "default": "Ctrl+Shift+U"
       },
-      "description": "解除拉黑当前视频作者"
+      "description": "__MSG_unblockAuthorCommand__"
     }
   },
   "background": {

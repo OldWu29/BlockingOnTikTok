@@ -3,13 +3,70 @@
  */
 (function () {
   const SEC_UID_RE = /MS4wLj[A-Za-z0-9_\-]{15,}/;
+  const GENERIC_NICKNAMES = new Set(['未知作者', '未知用户', '主播', '该用户']);
+
+  function isGenericNickname(name) {
+    const value = String(name || '').trim();
+    return !value || GENERIC_NICKNAMES.has(value);
+  }
+
+  function pickNickname(secUid, ...candidates) {
+    for (const name of candidates) {
+      if (!isGenericNickname(name)) return String(name).trim();
+    }
+    if (secUid) {
+      const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
+      if (cached?.nickname && !isGenericNickname(cached.nickname)) {
+        return cached.nickname;
+      }
+    }
+    for (const name of candidates) {
+      if (name && String(name).trim()) return String(name).trim();
+    }
+    return '该用户';
+  }
+
+  function getNicknameFromContainer(container) {
+    if (!container) return '';
+    const selectors = [
+      '[data-e2e="video-author-name"]',
+      '[data-e2e="live-avatar"]',
+      'a[data-e2e="video-avatar"]'
+    ];
+    for (const selector of selectors) {
+      const el = container.querySelector(selector);
+      const text = el?.textContent?.replace(/^@/, '').trim();
+      if (text && !isGenericNickname(text)) return text;
+    }
+    return '';
+  }
+
+  function enrichAuthor(author, container) {
+    if (!author?.secUid) return author;
+    author.nickname = pickNickname(
+      author.secUid,
+      author.nickname,
+      getNicknameFromContainer(container)
+    );
+    return author;
+  }
+
+  function extractNicknameFromBlockResponse(data) {
+    if (!data || typeof data !== 'object') return '';
+    const user = data.user || data.user_info || data.block_user;
+    if (user) {
+      const name = user.nickname || user.nick_name || user.name;
+      if (name) return name;
+    }
+    return '';
+  }
 
   const awemeAuthorCache = new Map();
   const liveAuthorCache = new Map();
   const MAX_CACHE_SIZE = 200;
   const MAX_JSON_BYTES = 512 * 1024;
   const NETWORK_URL_RE =
-    /aweme\/v1\/web\/(aweme|feed|recommend|module|history|tab)|webcast\/room\/web\/enter|webcast\/user\/profile/i;
+    /aweme\/v1\/web\/(aweme|feed|recommend|module|history|tab)|webcast\/room\/web\/(enter|info)|webcast\/user\/profile/i;
 
   let payloadQueue = [];
   let payloadDrainScheduled = false;
@@ -358,10 +415,15 @@
     }
 
     const blocked = data.block_status === 1;
+    const nickname = pickNickname(secUid, extractNicknameFromBlockResponse(data));
+    if (!isGenericNickname(nickname) && secUid) {
+      const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid) || {};
+      awemeAuthorCache.set(secUid, { ...cached, secUid, nickname, userId: cached.userId || userId || '' });
+    }
     return {
       success: unblock ? !blocked : blocked,
       blocked,
-      nickname: data.user?.nickname || '',
+      nickname,
       data
     };
   }
@@ -377,12 +439,29 @@
     return '120.0.0.0';
   }
 
+  function normalizeHref(href) {
+    const value = String(href || '');
+    if (value.startsWith('//')) return 'https:' + value;
+    return value;
+  }
+
   function extractRoomIdFromHref(href) {
-    if (!href) return null;
-    const queryMatch = href.match(/room_id=(\d+)/);
-    if (queryMatch) return queryMatch[1];
-    const pathMatch = href.match(/live\.douyin\.com\/(\d+)/);
-    if (pathMatch) return pathMatch[1];
+    const url = normalizeHref(href);
+    if (!url) return null;
+
+    const patterns = [
+      /room_id=(\d+)/i,
+      /room_id_str=(\d+)/i,
+      /web_rid=(\d+)/i,
+      /live\.douyin\.com\/(\d+)/i,
+      /live\.douyin\.com\/[^?]*[?&]room_id=(\d+)/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match?.[1]) return match[1];
+    }
+
     return null;
   }
 
@@ -397,16 +476,106 @@
 
     if (attrRoomId) return String(attrRoomId);
 
-    const liveLinks = container.querySelectorAll('a[href*="live.douyin.com"]');
-    for (const link of liveLinks) {
-      const roomId = extractRoomIdFromHref(link.getAttribute('href') || '');
-      if (roomId) return roomId;
+    const selectors = [
+      'a[data-e2e="video-avatar"]',
+      'a[href*="live.douyin.com"]',
+      'a[href*="room_id"]',
+      'a[href]'
+    ];
+
+    for (const selector of selectors) {
+      const links = container.querySelectorAll(selector);
+      for (const link of links) {
+        const roomId = extractRoomIdFromHref(link.getAttribute('href') || '');
+        if (roomId) return roomId;
+      }
     }
 
-    const avatarLink = container.querySelector('a[data-e2e="video-avatar"]');
-    if (avatarLink) {
-      const roomId = extractRoomIdFromHref(avatarLink.getAttribute('href') || '');
-      if (roomId) return roomId;
+    return null;
+  }
+
+  function extractAuthorFromReactFiber(startEl) {
+    if (!startEl) return null;
+
+    const fiberKey = Object.keys(startEl).find(
+      (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+    );
+    if (!fiberKey) return null;
+
+    let node = startEl[fiberKey];
+    for (let depth = 0; node && depth < 28; depth++) {
+      const props = node.memoizedProps || node.pendingProps;
+      if (!props) {
+        node = node.return;
+        continue;
+      }
+
+      const candidates = [
+        props.awemeInfo,
+        props.aweme,
+        props.item?.awemeInfo,
+        props.item?.aweme,
+        props.videoInfo?.awemeInfo,
+        props.data?.awemeInfo
+      ];
+
+      for (const aweme of candidates) {
+        if (!aweme?.author) continue;
+        cacheAwemeAuthor(aweme);
+        const author = aweme.author;
+        const secUid = author.sec_uid || author.secUid;
+        if (!secUid) continue;
+
+        return {
+          secUid,
+          userId: author.uid || author.user_id || author.id || '',
+          nickname: pickNickname(secUid, author.nickname),
+          awemeId: aweme.aweme_id || aweme.awemeId || '',
+          isLive: !!(author.room_id || aweme.cell_room || author.live_status),
+          source: 'react-fiber-aweme'
+        };
+      }
+
+      const user = props.author || props.user || props.owner || props.userInfo;
+      if (user) {
+        const secUid = user.sec_uid || user.secUid;
+        if (secUid && SEC_UID_RE.test(secUid)) {
+          cacheLiveAuthor(user);
+          return {
+            secUid,
+            userId: user.uid || user.user_id || user.id || '',
+            nickname: pickNickname(secUid, user.nickname, user.nick_name, user.name),
+            isLive: true,
+            source: 'react-fiber-user'
+          };
+        }
+      }
+
+      node = node.return;
+    }
+
+    return null;
+  }
+
+  function guessAuthorFromNickname(container) {
+    if (!container) return null;
+
+    const nickname =
+      container.querySelector('[data-e2e="video-author-name"]')?.textContent?.replace(/^@/, '').trim() ||
+      container.querySelector('a[data-e2e="video-avatar"]')?.textContent?.replace(/^@/, '').trim();
+
+    if (!nickname) return null;
+
+    for (const info of awemeAuthorCache.values()) {
+      if (info.nickname === nickname) {
+        return { ...info, source: 'nickname-aweme-cache' };
+      }
+    }
+
+    for (const info of liveAuthorCache.values()) {
+      if (info.nickname === nickname) {
+        return { ...info, source: 'nickname-live-cache' };
+      }
     }
 
     return null;
@@ -447,34 +616,46 @@
         msToken: readCookie('msToken') || generateMsToken()
       });
 
-      const url = `https://live.douyin.com/webcast/room/web/enter/?${params.toString()}`;
-
       try {
-        const response = await fetch(url, {
-          method: 'GET',
-          credentials: 'include',
-          headers: {
-            Accept: 'application/json, text/plain, */*',
-            Referer: 'https://www.douyin.com/',
-            Origin: 'https://www.douyin.com'
-          }
-        });
+        const endpoints = [
+          `https://live.douyin.com/webcast/room/web/enter/?${params.toString()}`,
+          `https://www.douyin.com/webcast/room/web/enter/?${params.toString()}`
+        ];
 
-        if (!response.ok) return null;
+        for (const url of endpoints) {
+          const response = await fetch(url, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+              Accept: 'application/json, text/plain, */*',
+              Referer: location.origin + '/',
+              Origin: location.origin
+            }
+          });
 
-        const data = await response.json();
-        const user = data?.data?.user || data?.data?.owner;
-        if (!user?.sec_uid) return null;
+          if (!response.ok) continue;
 
-        cacheLiveAuthor(user, cacheKey);
-        return {
-          secUid: user.sec_uid,
-          userId: user.id_str || user.uid || user.id || '',
-          nickname: user.nickname || '主播',
-          roomId: cacheKey,
-          isLive: true,
-          source: 'live-room-api'
-        };
+          const data = await response.json();
+          const user =
+            data?.data?.user ||
+            data?.data?.owner ||
+            data?.data?.room?.owner ||
+            data?.data?.room?.anchor;
+
+          if (!user?.sec_uid) continue;
+
+          cacheLiveAuthor(user, cacheKey);
+          return {
+            secUid: user.sec_uid,
+            userId: user.id_str || user.uid || user.id || '',
+            nickname: user.nickname || '主播',
+            roomId: cacheKey,
+            isLive: true,
+            source: 'live-room-api'
+          };
+        }
+
+        return null;
       } catch (_) {
         return null;
       } finally {
@@ -486,14 +667,126 @@
     return task;
   }
 
+  const fallbackNicknameFetchAttempted = new Set();
+  const profileNicknameFetchCache = new Map();
+
+  function cacheNicknameForSecUid(secUid, userId, nickname) {
+    if (!secUid || isGenericNickname(nickname)) return;
+    const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid) || {};
+    awemeAuthorCache.set(secUid, {
+      ...cached,
+      secUid,
+      userId: userId || cached.userId || '',
+      nickname
+    });
+  }
+
+  async function fetchUserNicknameBySecUid(secUid, userId) {
+    if (!secUid || !SEC_UID_RE.test(secUid)) return '';
+
+    const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
+    if (cached?.nickname && !isGenericNickname(cached.nickname)) {
+      return cached.nickname;
+    }
+
+    if (profileNicknameFetchCache.has(secUid)) {
+      return profileNicknameFetchCache.get(secUid);
+    }
+
+    if (fallbackNicknameFetchAttempted.has(secUid)) {
+      return '';
+    }
+
+    const task = (async () => {
+      fallbackNicknameFetchAttempted.add(secUid);
+
+      const liveParams = new URLSearchParams({
+        aid: '6383',
+        app_name: 'douyin_web',
+        live_id: '1',
+        device_platform: 'web',
+        language: 'zh-CN',
+        enter_from: 'web_homepage_hot',
+        sec_anchor_id: secUid,
+        msToken: readCookie('msToken') || generateMsToken()
+      });
+      if (userId) liveParams.set('anchor_id', String(userId));
+
+      const webParams = new URLSearchParams(getDeviceParams());
+      webParams.set('sec_user_id', secUid);
+      if (userId) webParams.set('user_id', String(userId));
+      webParams.set('msToken', readCookie('msToken') || generateMsToken());
+      const webid = readCookie('s_v_web_id');
+      if (webid) {
+        webParams.set('webid', webid);
+        webParams.set('verifyFp', webid);
+        webParams.set('fp', webid);
+      }
+
+      const urls = [
+        `https://www.douyin.com/aweme/v1/web/user/profile/other/?${webParams.toString()}`,
+        `https://live.douyin.com/webcast/user/profile/?${liveParams.toString()}`,
+        `https://www.douyin.com/webcast/user/profile/?${liveParams.toString()}`
+      ];
+
+      for (const url of urls) {
+        try {
+          const response = await fetch(url, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+              Accept: 'application/json, text/plain, */*',
+              Referer: location.href,
+              Origin: location.origin
+            }
+          });
+          if (!response.ok) continue;
+
+          const data = await response.json();
+          const user = data?.user || data?.data?.user || data?.data?.user_profile?.base_info;
+          const nickname = user?.nickname || user?.nick_name || user?.name;
+          if (!nickname || isGenericNickname(nickname)) continue;
+
+          cacheLiveAuthor(user, user?.room_id || user?.roomId);
+          cacheNicknameForSecUid(secUid, userId || user?.uid || user?.id, nickname);
+          return String(nickname).trim();
+        } catch (_) {}
+      }
+
+      return '';
+    })();
+
+    profileNicknameFetchCache.set(secUid, task);
+    try {
+      return await task;
+    } finally {
+      profileNicknameFetchCache.delete(secUid);
+    }
+  }
+
+  async function finalizeAuthorNickname(author) {
+    if (!author?.secUid) return author;
+    if (!isGenericNickname(author.nickname)) return author;
+
+    const nickname = await fetchUserNicknameBySecUid(author.secUid, author.userId);
+    if (nickname) {
+      author.nickname = nickname;
+    }
+    return author;
+  }
+
   function isLiveStreamPage() {
     return location.hostname === 'live.douyin.com' || /^\/live(\/|$)/.test(location.pathname);
   }
 
   function containerHasLiveBadge(container) {
     if (!container) return false;
-    if (container.querySelector('a[href*="live.douyin.com"]')) return true;
-    if (container.querySelector('img[alt="LiveIcon"], img[src*="avatar-live"], img[src*="live"]')) {
+    if (container.querySelector('a[href*="live.douyin.com"], a[href*="room_id"]')) return true;
+    if (
+      container.querySelector(
+        'img[alt="LiveIcon"], img[src*="avatar-live"], img[src*="live"], [class*="live"]'
+      )
+    ) {
       return true;
     }
     return !!extractRoomIdFromContainer(container);
@@ -524,7 +817,7 @@
     const avatarLink = container.querySelector('a[data-e2e="video-avatar"]');
     if (!avatarLink) return null;
 
-    const href = avatarLink.getAttribute('href') || '';
+    const href = normalizeHref(avatarLink.getAttribute('href') || '');
     const userMatch = href.match(/\/user\/([^?/#]+)/);
     if (userMatch && SEC_UID_RE.test(userMatch[1])) {
       const secUid = userMatch[1];
@@ -532,14 +825,38 @@
       return {
         secUid,
         userId: cached?.userId || '',
-        nickname:
-          avatarLink.getAttribute('title') ||
-          avatarLink.textContent?.replace(/^@/, '').trim() ||
-          cached?.nickname ||
-          '未知作者',
+        nickname: pickNickname(
+          secUid,
+          avatarLink.getAttribute('title'),
+          avatarLink.textContent?.replace(/^@/, '').trim(),
+          cached?.nickname
+        ),
         isLive: containerHasLiveBadge(container),
         source: 'video-avatar'
       };
+    }
+
+    const roomId = extractRoomIdFromHref(href);
+    if (roomId && liveAuthorCache.has(String(roomId))) {
+      return { ...liveAuthorCache.get(String(roomId)), source: 'video-avatar-room-cache' };
+    }
+
+    return null;
+  }
+
+  function getAuthorFromReactInContainer(container) {
+    if (!container) return null;
+
+    const anchors = [
+      container.querySelector('a[data-e2e="video-avatar"]'),
+      container.querySelector('[data-e2e="video-player-digg"]'),
+      container.querySelector('video'),
+      container
+    ];
+
+    for (const el of anchors) {
+      const author = extractAuthorFromReactFiber(el);
+      if (author) return author;
     }
 
     return null;
@@ -548,18 +865,25 @@
   async function resolveAuthorFromContainer(container, source) {
     if (!container) return null;
 
+    const fromReact = getAuthorFromReactInContainer(container);
+    if (fromReact) return enrichAuthor(fromReact, container);
+
     const cached = getAuthorFromContainerCache(container);
-    if (cached) return cached;
+    if (cached) return enrichAuthor(cached, container);
+
+    const fromNickname = guessAuthorFromNickname(container);
+    if (fromNickname) return enrichAuthor(fromNickname, container);
 
     const fromAvatar = getAuthorFromVideoAvatar(container);
-    if (fromAvatar) return fromAvatar;
+    if (fromAvatar) return enrichAuthor(fromAvatar, container);
 
     const fromDom = extractAuthorFromContainer(container, source);
-    if (fromDom) return fromDom;
+    if (fromDom) return enrichAuthor(fromDom, container);
 
     const roomId = extractRoomIdFromContainer(container);
     if (roomId) {
-      return fetchUserInfoFromLiveRoom(roomId);
+      const fromRoom = await fetchUserInfoFromLiveRoom(roomId);
+      return enrichAuthor(fromRoom, container);
     }
 
     return null;
@@ -584,13 +908,22 @@
         '';
 
       const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
-      return {
-        secUid,
-        userId: cached?.userId || '',
-        nickname: nickname || cached?.nickname || '未知作者',
-        isLive: containerHasLiveBadge(container),
-        source
-      };
+      return enrichAuthor(
+        {
+          secUid,
+          userId: cached?.userId || '',
+          nickname: pickNickname(
+            secUid,
+            nickname,
+            link.getAttribute('title'),
+            link.textContent?.replace(/^@/, '').trim(),
+            cached?.nickname
+          ),
+          isLive: containerHasLiveBadge(container),
+          source
+        },
+        container
+      );
     }
 
     const dataSecUid =
@@ -606,7 +939,11 @@
       return {
         secUid: dataSecUid,
         userId: cached?.userId || '',
-        nickname: cached?.nickname || '主播',
+        nickname: pickNickname(
+          dataSecUid,
+          cached?.nickname,
+          container.querySelector('[data-e2e="video-author-name"], [data-e2e="live-avatar"]')?.textContent?.trim()
+        ),
         isLive: true,
         source: source + '-data'
       };
@@ -620,7 +957,7 @@
         return {
           secUid,
           userId: cached?.userId || '',
-          nickname: cached?.nickname || '未知作者',
+          nickname: pickNickname(secUid, cached?.nickname),
           isLive: containerHasLiveBadge(container),
           source: source + '-attr'
         };
@@ -709,6 +1046,18 @@
             '[data-e2e="video-player-digg"], a[data-e2e="video-avatar"], a[href*="/user/"], a[href*="live.douyin.com"]'
           )
         ) {
+          return parent;
+        }
+        parent = parent.parentElement;
+      }
+    }
+
+    const avatars = document.querySelectorAll('a[data-e2e="video-avatar"]');
+    const visibleAvatar = findClosestToViewportCenter(avatars);
+    if (visibleAvatar) {
+      let parent = visibleAvatar.parentElement;
+      for (let depth = 0; parent && depth < 14; depth++) {
+        if (parent.querySelector('video, [data-e2e="video-player-digg"]')) {
           return parent;
         }
         parent = parent.parentElement;
@@ -860,7 +1209,10 @@
         return {
           secUid,
           userId: playerEl.getAttribute('data-anchor-uid') || playerEl.getAttribute('data-user-id') || '',
-          nickname: '主播',
+          nickname: pickNickname(
+            secUid,
+            playerEl.getAttribute('data-anchor-name') || playerEl.getAttribute('title')
+          ),
           isLive: true,
           source: 'live-player-data'
         };
@@ -880,10 +1232,11 @@
 
     const secUid = match[1];
     const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
-    const nickname =
-      document.querySelector('[data-e2e="user-title"], h1')?.textContent?.trim() ||
-      cached?.nickname ||
-      '未知作者';
+    const nickname = pickNickname(
+      secUid,
+      document.querySelector('[data-e2e="user-title"], h1')?.textContent?.trim(),
+      cached?.nickname
+    );
 
     return {
       secUid,
@@ -928,28 +1281,22 @@
   }
 
   async function getCurrentAuthor() {
-    const fromDom = await getAuthorFromDom();
-    if (fromDom) return fromDom;
+    let author = await getAuthorFromDom();
+    if (!author) author = getAuthorFromLiveFeed();
+    if (!author) author = await getAuthorFromLivePage();
+    if (!author) author = await getAuthorFromVideoPage();
+    if (!author) author = getAuthorFromUserPage();
 
-    const fromFeed = getAuthorFromLiveFeed();
-    if (fromFeed) return fromFeed;
-
-    const fromLivePage = await getAuthorFromLivePage();
-    if (fromLivePage) return fromLivePage;
-
-    const fromVideoPage = await getAuthorFromVideoPage();
-    if (fromVideoPage) return fromVideoPage;
-
-    const fromUserPage = getAuthorFromUserPage();
-    if (fromUserPage) return fromUserPage;
-
-    const visibleContainer = findActiveVideoContainer() || findActiveLiveContainer();
-    const roomId = extractRoomIdFromContainer(visibleContainer);
-    if (roomId) {
-      return fetchUserInfoFromLiveRoom(roomId);
+    if (!author) {
+      const visibleContainer = findActiveVideoContainer() || findActiveLiveContainer();
+      const roomId = extractRoomIdFromContainer(visibleContainer);
+      if (roomId) {
+        author = await fetchUserInfoFromLiveRoom(roomId);
+      }
     }
 
-    return null;
+    if (!author) return null;
+    return await finalizeAuthorNickname(author);
   }
 
   window.addEventListener('message', async (event) => {
@@ -964,6 +1311,21 @@
         const author = await getCurrentAuthor();
         window.postMessage(
           { source: 'douyin-block-extension', action: 'get-author-result', requestId, author },
+          '*'
+        );
+        return;
+      }
+
+      if (action === 'fetch-user-nickname') {
+        const { secUid, userId } = payload || {};
+        const nickname = await fetchUserNicknameBySecUid(secUid, userId);
+        window.postMessage(
+          {
+            source: 'douyin-block-extension',
+            action: 'fetch-user-nickname-result',
+            requestId,
+            result: { nickname }
+          },
           '*'
         );
         return;
@@ -994,7 +1356,7 @@
       window.postMessage(
         {
           source: 'douyin-block-extension',
-          action: action === 'get-author' ? 'get-author-result' : 'block-user-result',
+          action: action === 'get-author' ? 'get-author-result' : action === 'fetch-user-nickname' ? 'fetch-user-nickname-result' : 'block-user-result',
           requestId,
           author: null,
           result: { success: false, error: error.message || '未知错误' }

@@ -9,6 +9,14 @@ const statusEl = document.getElementById('status');
 
 let currentAuthor = null;
 
+const RETRY_HINT = '请等待 1～2 秒后重试';
+
+function formatFailureMessage(message, fallback) {
+  const text = (message || fallback).replace(/[。．.!！]+$/, '');
+  if (text.includes('1～2 秒') || text.includes('1-2')) return text;
+  return `${text}。${RETRY_HINT}`;
+}
+
 function setStatus(text, type = '') {
   statusEl.textContent = text;
   statusEl.className = 'status' + (type ? ' is-' + type : '');
@@ -75,10 +83,10 @@ async function refreshAuthor() {
     const response = await sendToContent('get-author');
     if (!response?.ok) throw new Error(response?.error || '获取作者失败');
     renderAuthor(response.author);
-    setStatus(response.author ? '作者信息已更新' : '未识别到作者', response.author ? 'success' : 'error');
+    setStatus(response.author ? '作者信息已更新' : formatFailureMessage('未识别到作者'), response.author ? 'success' : 'error');
   } catch (error) {
     renderAuthor(null);
-    setStatus(error.message || '获取失败', 'error');
+    setStatus(formatFailureMessage(error.message, '获取失败'), 'error');
   } finally {
     refreshBtn.disabled = false;
   }
@@ -97,10 +105,10 @@ async function blockAuthor() {
     if (result?.success) {
       setStatus(`已拉黑：${result.author?.nickname || '该用户'}`, 'success');
     } else {
-      setStatus(result?.error || '拉黑失败，请确认已登录', 'error');
+      setStatus(formatFailureMessage(result?.error, '拉黑失败，请确认已登录'), 'error');
     }
   } catch (error) {
-    setStatus(error.message || '拉黑失败', 'error');
+    setStatus(formatFailureMessage(error.message, '拉黑失败'), 'error');
   } finally {
     refreshBtn.disabled = false;
     refreshAuthor();
@@ -120,10 +128,10 @@ async function unblockAuthor() {
     if (result?.success) {
       setStatus(`已解除拉黑：${result.author?.nickname || '该用户'}`, 'success');
     } else {
-      setStatus(result?.error || '解除拉黑失败，请确认已登录', 'error');
+      setStatus(formatFailureMessage(result?.error, '解除拉黑失败，请确认已登录'), 'error');
     }
   } catch (error) {
-    setStatus(error.message || '解除拉黑失败', 'error');
+    setStatus(formatFailureMessage(error.message, '解除拉黑失败'), 'error');
   } finally {
     refreshBtn.disabled = false;
     refreshAuthor();

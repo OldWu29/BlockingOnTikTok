@@ -35,7 +35,9 @@ const BlacklistStorage = {
     map[user.secUid] = {
       secUid: user.secUid,
       userId: user.userId || '',
-      nickname: user.nickname || '未知用户',
+      nickname: user.nickname && !['未知作者', '未知用户', '主播'].includes(user.nickname)
+        ? user.nickname
+        : '未知用户',
       blockedAt: user.blockedAt || Date.now()
     };
 
