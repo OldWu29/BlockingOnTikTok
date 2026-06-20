@@ -107,10 +107,12 @@ BlockingOnTikTok/
 │   ├── content.js         # 内容脚本，作者识别与 UI 交互
 │   ├── background.js      # 后台服务，处理快捷键
 │   ├── storage.js           # 本地黑名单存储
+│   ├── user-info.js         # UserInfo 模型与 UserInfoUtil 获取工具
+│   ├── user-info.js         # UserInfo 模型与 UserInfoUtil 工具类
 │   ├── popup.html/js/css  # 扩展弹窗
 │   ├── blacklist.html/js/css  # 黑名单管理页
 │   └── styles.css         # 页面悬浮按钮样式
-├── docs/                  # 隐私政策、上架说明等文档
+├── docs/                  # 隐私政策、上架说明、审核测试说明等
 ├── scripts/
 │   └── package.ps1        # 打包脚本
 └── README.md
@@ -182,6 +184,8 @@ A：Chromium 扩展快捷键必须包含 `Ctrl` 或 `Alt`，不能单独使用 `
 
 - 仓库地址：[https://github.com/OldWu29/BlockingOnTikTok](https://github.com/OldWu29/BlockingOnTikTok)
 - 隐私政策：[docs/privacy-policy.zh-CN.md](docs/privacy-policy.zh-CN.md)
+- 审核测试说明：[docs/certification-testing-notes.zh-CN.md](docs/certification-testing-notes.zh-CN.md)
+- 商店提交文案：[docs/partner-center-submission.zh-CN.md](docs/partner-center-submission.zh-CN.md)
 
 ---
 

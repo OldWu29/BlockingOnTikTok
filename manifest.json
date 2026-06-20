@@ -26,14 +26,14 @@
   "content_scripts": [
     {
       "matches": ["https://www.douyin.com/*", "https://live.douyin.com/*"],
-      "js": ["src/storage.js", "src/content.js"],
+      "js": ["src/storage.js", "src/user-info.js", "src/content.js"],
       "css": ["src/styles.css"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["src/inject.js"],
+      "resources": ["src/user-info.js", "src/inject.js"],
       "matches": ["https://www.douyin.com/*", "https://live.douyin.com/*"]
     }
   ],

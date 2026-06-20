@@ -3,20 +3,14 @@
  */
 (function () {
   const SEC_UID_RE = /MS4wLj[A-Za-z0-9_\-]{15,}/;
-  const GENERIC_NICKNAMES = new Set(['未知作者', '未知用户', '主播', '该用户']);
-
-  function isGenericNickname(name) {
-    const value = String(name || '').trim();
-    return !value || GENERIC_NICKNAMES.has(value);
-  }
 
   function pickNickname(secUid, ...candidates) {
     for (const name of candidates) {
-      if (!isGenericNickname(name)) return String(name).trim();
+      if (!UserInfoUtil.isGenericNickname(name)) return String(name).trim();
     }
     if (secUid) {
       const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
-      if (cached?.nickname && !isGenericNickname(cached.nickname)) {
+      if (cached?.nickname && !UserInfoUtil.isGenericNickname(cached.nickname)) {
         return cached.nickname;
       }
     }
@@ -36,7 +30,7 @@
     for (const selector of selectors) {
       const el = container.querySelector(selector);
       const text = el?.textContent?.replace(/^@/, '').trim();
-      if (text && !isGenericNickname(text)) return text;
+      if (text && !UserInfoUtil.isGenericNickname(text)) return text;
     }
     return '';
   }
@@ -416,7 +410,7 @@
 
     const blocked = data.block_status === 1;
     const nickname = pickNickname(secUid, extractNicknameFromBlockResponse(data));
-    if (!isGenericNickname(nickname) && secUid) {
+    if (!UserInfoUtil.isGenericNickname(nickname) && secUid) {
       const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid) || {};
       awemeAuthorCache.set(secUid, { ...cached, secUid, nickname, userId: cached.userId || userId || '' });
     }
@@ -617,19 +611,29 @@
       });
 
       try {
-        const endpoints = [
-          `https://live.douyin.com/webcast/room/web/enter/?${params.toString()}`,
-          `https://www.douyin.com/webcast/room/web/enter/?${params.toString()}`
-        ];
+        const query = params.toString();
+        let enterPath = `/webcast/room/web/enter/?${query}`;
+        const signed = signUrl(enterPath);
+        if (signed.startsWith('http')) {
+          enterPath = signed.replace(/^https?:\/\/[^/]+/, '');
+        } else if (signed.startsWith('/')) {
+          enterPath = signed;
+        }
 
-        for (const url of endpoints) {
+        const url = `https://live.douyin.com${enterPath}`;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 700));
+          }
+
           const response = await fetch(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
               Accept: 'application/json, text/plain, */*',
-              Referer: location.origin + '/',
-              Origin: location.origin
+              Referer:
+                location.hostname === 'live.douyin.com' ? location.href : 'https://live.douyin.com/',
+              Origin: 'https://live.douyin.com'
             }
           });
 
@@ -671,7 +675,7 @@
   const profileNicknameFetchCache = new Map();
 
   function cacheNicknameForSecUid(secUid, userId, nickname) {
-    if (!secUid || isGenericNickname(nickname)) return;
+    if (!secUid || UserInfoUtil.isGenericNickname(nickname)) return;
     const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid) || {};
     awemeAuthorCache.set(secUid, {
       ...cached,
@@ -685,7 +689,7 @@
     if (!secUid || !SEC_UID_RE.test(secUid)) return '';
 
     const cached = awemeAuthorCache.get(secUid) || liveAuthorCache.get(secUid);
-    if (cached?.nickname && !isGenericNickname(cached.nickname)) {
+    if (cached?.nickname && !UserInfoUtil.isGenericNickname(cached.nickname)) {
       return cached.nickname;
     }
 
@@ -725,19 +729,22 @@
 
       const urls = [
         `https://www.douyin.com/aweme/v1/web/user/profile/other/?${webParams.toString()}`,
-        `https://live.douyin.com/webcast/user/profile/?${liveParams.toString()}`,
-        `https://www.douyin.com/webcast/user/profile/?${liveParams.toString()}`
+        `https://live.douyin.com/webcast/user/profile/?${liveParams.toString()}`
       ];
+
+      const liveReferer =
+        location.hostname === 'live.douyin.com' ? location.href : 'https://live.douyin.com/';
 
       for (const url of urls) {
         try {
+          const isLiveHost = url.includes('live.douyin.com');
           const response = await fetch(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
               Accept: 'application/json, text/plain, */*',
-              Referer: location.href,
-              Origin: location.origin
+              Referer: isLiveHost ? liveReferer : location.href,
+              Origin: isLiveHost ? 'https://live.douyin.com' : location.origin
             }
           });
           if (!response.ok) continue;
@@ -745,7 +752,7 @@
           const data = await response.json();
           const user = data?.user || data?.data?.user || data?.data?.user_profile?.base_info;
           const nickname = user?.nickname || user?.nick_name || user?.name;
-          if (!nickname || isGenericNickname(nickname)) continue;
+          if (!nickname || UserInfoUtil.isGenericNickname(nickname)) continue;
 
           cacheLiveAuthor(user, user?.room_id || user?.roomId);
           cacheNicknameForSecUid(secUid, userId || user?.uid || user?.id, nickname);
@@ -766,7 +773,7 @@
 
   async function finalizeAuthorNickname(author) {
     if (!author?.secUid) return author;
-    if (!isGenericNickname(author.nickname)) return author;
+    if (!UserInfoUtil.isGenericNickname(author.nickname)) return author;
 
     const nickname = await fetchUserNicknameBySecUid(author.secUid, author.userId);
     if (nickname) {
@@ -876,6 +883,15 @@
 
     const fromAvatar = getAuthorFromVideoAvatar(container);
     if (fromAvatar) return enrichAuthor(fromAvatar, container);
+
+    const avatarLink = container.querySelector('a[data-e2e="video-avatar"]');
+    if (avatarLink) {
+      const roomId = extractRoomIdFromHref(normalizeHref(avatarLink.getAttribute('href') || ''));
+      if (roomId) {
+        const fromLiveAvatar = await fetchUserInfoFromLiveRoom(roomId);
+        if (fromLiveAvatar) return enrichAuthor(fromLiveAvatar, container);
+      }
+    }
 
     const fromDom = extractAuthorFromContainer(container, source);
     if (fromDom) return enrichAuthor(fromDom, container);
@@ -1280,7 +1296,18 @@
     return null;
   }
 
-  async function getCurrentAuthor() {
+  async function getCurrentAuthor(options = {}) {
+    const force = !!options?.force;
+    let author = await getCurrentAuthorOnce();
+    if (!author?.secUid && force) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      author = await getCurrentAuthorOnce();
+    }
+    if (!author) return null;
+    return UserInfoUtil.from(await finalizeAuthorNickname(author)).toPlainObject();
+  }
+
+  async function getCurrentAuthorOnce() {
     let author = await getAuthorFromDom();
     if (!author) author = getAuthorFromLiveFeed();
     if (!author) author = await getAuthorFromLivePage();
@@ -1296,7 +1323,7 @@
     }
 
     if (!author) return null;
-    return await finalizeAuthorNickname(author);
+    return author;
   }
 
   window.addEventListener('message', async (event) => {
@@ -1308,7 +1335,10 @@
 
     try {
       if (action === 'get-author') {
-        const author = await getCurrentAuthor();
+        if (payload?.force) {
+          fallbackNicknameFetchAttempted.clear();
+        }
+        const author = await getCurrentAuthor({ force: payload?.force });
         window.postMessage(
           { source: 'douyin-block-extension', action: 'get-author-result', requestId, author },
           '*'

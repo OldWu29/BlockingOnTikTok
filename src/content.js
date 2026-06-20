@@ -1,12 +1,9 @@
 const MESSAGE_SOURCE = 'douyin-block-extension';
 const RETRY_HINT = '请等待 1～2 秒后重试';
-const GENERIC_NICKNAMES = new Set(['未知作者', '未知用户', '主播', '该用户']);
 let injectReady = false;
 let requestCounter = 0;
-let currentAuthorState = { secUid: '', blocked: false };
 let refreshInFlight = false;
 let lastRefreshAt = 0;
-const nicknameFallbackFetched = new Set();
 
 function formatFailureMessage(message, fallback = '操作失败，请确认已登录抖音') {
   const text = (message || fallback).replace(/[。．.!！]+$/, '');
@@ -14,52 +11,25 @@ function formatFailureMessage(message, fallback = '操作失败，请确认已�
   return `${text}。${RETRY_HINT}`;
 }
 
-function isGenericNickname(name) {
-  const value = String(name || '').trim();
-  return !value || GENERIC_NICKNAMES.has(value);
-}
-
-async function resolveDisplayName(secUid, userId, ...candidates) {
-  for (const name of candidates) {
-    if (!isGenericNickname(name)) return String(name).trim();
-  }
-
-  if (secUid) {
-    const existing = await BlacklistStorage.get(secUid);
-    if (existing?.nickname && !isGenericNickname(existing.nickname)) {
-      return existing.nickname;
-    }
-  }
-
-  for (const name of candidates) {
-    if (name && String(name).trim()) return String(name).trim();
-  }
-
-  if (secUid && !nicknameFallbackFetched.has(secUid)) {
-    nicknameFallbackFetched.add(secUid);
-    try {
-      await ensureInjectReady();
-      const result = await callPage('fetch-user-nickname', { secUid, userId });
-      if (result?.nickname && !isGenericNickname(result.nickname)) {
-        return String(result.nickname).trim();
-      }
-    } catch (_) {}
-  }
-
-  return '该用户';
-}
-
 function injectPageScript() {
   if (document.getElementById('douyin-block-inject')) return;
 
-  const script = document.createElement('script');
-  script.id = 'douyin-block-inject';
-  script.src = chrome.runtime.getURL('src/inject.js');
-  script.onload = () => {
-    injectReady = true;
-    script.remove();
+  const loadScript = (src, id, onLoad) => {
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = chrome.runtime.getURL(src);
+    script.onload = () => {
+      script.remove();
+      if (onLoad) onLoad();
+    };
+    (document.head || document.documentElement).appendChild(script);
   };
-  (document.head || document.documentElement).appendChild(script);
+
+  loadScript('src/user-info.js', 'douyin-block-user-info', () => {
+    loadScript('src/inject.js', 'douyin-block-inject', () => {
+      injectReady = true;
+    });
+  });
 }
 
 async function ensureInjectReady() {
@@ -108,6 +78,11 @@ function callPage(action, payload) {
   });
 }
 
+UserInfoUtil.registerPageBridge({
+  callPage,
+  ensureInjectReady
+});
+
 function showToast(message, type = 'info') {
   let toast = document.getElementById('douyin-block-toast');
   if (!toast) {
@@ -126,41 +101,128 @@ function showToast(message, type = 'info') {
   }, 2400);
 }
 
-async function getCurrentAuthor() {
-  await ensureInjectReady();
-  const author = await callPage('get-author');
-  if (!author?.secUid) return author;
+async function getNicknameFromPageDom() {
+  const pick = (text) => String(text || '').replace(/^@/, '').trim().split(/[·•\s]/)[0].trim();
 
-  const blocked = await BlacklistStorage.isBlocked(author.secUid);
-  currentAuthorState = { secUid: author.secUid, blocked };
-  return { ...author, blocked };
+  const selectors = [
+    '[data-e2e="video-author-name"]',
+    '[data-e2e="live-avatar"]',
+    'a[data-e2e="video-avatar"]'
+  ];
+  for (const selector of selectors) {
+    const text = pick(document.querySelector(selector)?.textContent);
+    if (text && !UserInfoUtil.isGenericNickname(text)) return text;
+  }
+
+  const desc = document.querySelector('[data-e2e="video-desc"]')?.textContent || '';
+  const atMatch = desc.match(/@([^\s·•]+)/);
+  if (atMatch?.[1] && !UserInfoUtil.isGenericNickname(atMatch[1])) return atMatch[1].trim();
+
+  return '';
+}
+
+async function resolveAuthorFallback(wantUnblock) {
+  const fab = document.getElementById('douyin-block-fab');
+  const fabSecUid = fab?.dataset?.secUid || '';
+  if (fabSecUid) {
+    const fromFab = await UserInfoUtil.getBySecUid(fabSecUid);
+    if (fromFab?.isValid()) {
+      return await UserInfoUtil.enrichBlockedState(
+        fromFab.clone({ userId: fab?.dataset?.userId || fromFab.userId })
+      );
+    }
+  }
+
+  const nickname = await getNicknameFromPageDom();
+  if (nickname && typeof BlacklistStorage !== 'undefined') {
+    const list = await BlacklistStorage.getList();
+    const match = list.find((item) => {
+      const name = String(item.nickname || '').trim();
+      return name === nickname || name.includes(nickname) || nickname.includes(name);
+    });
+    if (match) return await UserInfoUtil.enrichBlockedState(UserInfoUtil.from(match));
+  }
+
+  const current = UserInfoUtil.getCurrent();
+  if (current?.isValid()) {
+    return await UserInfoUtil.enrichBlockedState(current);
+  }
+
+  if (wantUnblock && nickname && typeof BlacklistStorage !== 'undefined') {
+    const list = await BlacklistStorage.getList();
+    if (list.length === 1) {
+      return await UserInfoUtil.enrichBlockedState(UserInfoUtil.from(list[0]));
+    }
+  }
+
+  return null;
+}
+
+async function getCurrentAuthor(force = false) {
+  return UserInfoUtil.fetchCurrentAuthor({ force });
+}
+
+async function blockCurrentAuthor(unblock) {
+  let plan = await UserInfoUtil.blockOrUnblockCurrent(unblock);
+  let author = plan.author;
+
+  if (!author?.isValid()) {
+    const explicitUnblock = typeof unblock === 'boolean' ? unblock : undefined;
+    author = await resolveAuthorFallback(explicitUnblock === true);
+    if (author?.isValid()) {
+      const shouldUnblock =
+        explicitUnblock !== undefined ? explicitUnblock : author.blocked;
+      plan = { author, shouldUnblock };
+      UserInfoUtil.setCurrent(author);
+    }
+  }
+
+  if (!author?.isValid()) {
+    showToast(formatFailureMessage('未识别到作者，若对方正在直播请稍候', '未识别到作者'), 'error');
+    return { success: false, error: '未找到作者' };
+  }
+
+  updateFloatingButton(author);
+
+  const result = await blockUserById(
+    author.secUid,
+    author.userId,
+    author.nickname,
+    plan.shouldUnblock
+  );
+
+  const current = UserInfoUtil.getCurrent();
+  return {
+    ...result,
+    author: current?.toPlainObject() || author.toPlainObject(),
+    unblocked: plan.shouldUnblock
+  };
 }
 
 async function blockUserById(secUid, userId, nickname, unblock = false) {
+  const user = UserInfoUtil.from({ secUid, userId, nickname });
   const result = await callPage('block-user', {
-    secUid,
-    userId,
+    secUid: user.secUid,
+    userId: user.userId,
     unblock
   });
 
   if (result.success) {
-    const displayName = await resolveDisplayName(secUid, userId, result.nickname, nickname);
+    const displayName = await UserInfoUtil.resolveDisplayName(user, result.nickname);
 
     if (unblock) {
-      await BlacklistStorage.remove(secUid);
+      await BlacklistStorage.remove(user.secUid);
       showToast(`已解除拉黑：${displayName}`, 'success');
     } else {
-      await BlacklistStorage.add({
-        secUid,
-        userId,
-        nickname: displayName
-      });
+      await BlacklistStorage.add(user.clone({ nickname: displayName }));
       showToast(`已拉黑：${displayName}`, 'success');
     }
 
-    if (currentAuthorState.secUid === secUid) {
-      currentAuthorState.blocked = !unblock;
-      updateFloatingButton(!unblock);
+    const current = UserInfoUtil.getCurrent();
+    if (current?.secUid === user.secUid) {
+      current.blocked = !unblock;
+      UserInfoUtil.setCurrent(current);
+      updateFloatingButton(current);
     }
   } else {
     showToast(formatFailureMessage(result.error), 'error');
@@ -169,44 +231,26 @@ async function blockUserById(secUid, userId, nickname, unblock = false) {
   return result;
 }
 
-async function blockCurrentAuthor(unblock = false) {
-  const author = await getCurrentAuthor();
-  if (!author?.secUid) {
-    showToast(formatFailureMessage('未识别到作者，若对方正在直播请稍候', '未识别到作者'), 'error');
-    return { success: false, error: '未找到作者' };
-  }
-
-  const shouldUnblock = typeof unblock === 'boolean' ? unblock : !!author.blocked;
-  const result = await blockUserById(
-    author.secUid,
-    author.userId,
-    author.nickname,
-    shouldUnblock
-  );
-
-  return { ...result, author, unblocked: shouldUnblock };
-}
-
 function createFloatingButton() {
   if (document.getElementById('douyin-block-fab')) return;
 
   const fab = document.createElement('button');
   fab.id = 'douyin-block-fab';
   fab.type = 'button';
-  fab.title = '拉黑/解除拉黑当前作者 (Ctrl+Shift+B / Ctrl+Shift+U)';
+  fab.title = '切换拉黑状态 (Ctrl+Shift+B / Ctrl+Shift+U)';
   fab.innerHTML = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8V22h19.2v-2.8c0-3.2-6.4-4.8-9.6-4.8zm10.8-2.4 1.7 1.7-12 12-1.7-1.7 12-12z"/>
     </svg>
-    <span>拉黑作者</span>
+    <span>切换拉黑状态</span>
   `;
 
   fab.addEventListener('click', async () => {
     fab.disabled = true;
     fab.classList.add('is-loading');
     try {
-      const author = await getCurrentAuthor();
-      await blockCurrentAuthor(!!author?.blocked);
+      showToast('正在识别作者...', 'info');
+      await blockCurrentAuthor();
     } finally {
       fab.disabled = false;
       fab.classList.remove('is-loading');
@@ -216,20 +260,19 @@ function createFloatingButton() {
   document.body.appendChild(fab);
 }
 
-function updateFloatingButton(blocked) {
+function updateFloatingButton(author) {
   const fab = document.getElementById('douyin-block-fab');
   if (!fab) return;
 
-  const label = fab.querySelector('span');
-  if (blocked) {
-    fab.classList.add('is-blocked');
-    if (label) label.textContent = '解除拉黑';
-    fab.title = '解除拉黑当前作者 (Ctrl+Shift+U)';
-  } else {
-    fab.classList.remove('is-blocked');
-    if (label) label.textContent = '拉黑作者';
-    fab.title = '拉黑当前作者 (Ctrl+Shift+B)';
+  const info = author ? UserInfoUtil.from(author) : null;
+  if (info?.isValid()) {
+    fab.dataset.secUid = info.secUid;
+    fab.dataset.userId = info.userId || '';
   }
+
+  const label = fab.querySelector('span');
+  if (label) label.textContent = '切换拉黑状态';
+  fab.title = '切换拉黑状态 (Ctrl+Shift+B / Ctrl+Shift+U)';
 }
 
 async function refreshFloatingButtonState(force = false) {
@@ -244,8 +287,8 @@ async function refreshFloatingButtonState(force = false) {
 
   try {
     const author = await getCurrentAuthor();
-    if (author?.secUid) {
-      updateFloatingButton(!!author.blocked);
+    if (author?.isValid()) {
+      updateFloatingButton(author);
     }
   } catch (_) {
   } finally {
@@ -278,8 +321,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     try {
       if (message.action === 'get-author') {
-        const author = await getCurrentAuthor();
-        sendResponse({ ok: true, author });
+        const author = await getCurrentAuthor(true);
+        sendResponse({ ok: true, author: author?.toPlainObject() || null });
+        return;
+      }
+
+      if (message.action === 'toggle') {
+        const result = await blockCurrentAuthor();
+        sendResponse({ ok: true, result });
         return;
       }
 

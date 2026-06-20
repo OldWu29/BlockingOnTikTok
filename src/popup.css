@@ -96,7 +96,7 @@ h1 {
   word-break: break-all;
 }
 
-.primary-btn,
+.toggle-btn,
 .ghost-btn {
   width: 100%;
   border: none;
@@ -107,36 +107,19 @@ h1 {
   cursor: pointer;
 }
 
-.primary-btn,
-.unblock-btn {
+.toggle-btn {
   margin-bottom: 8px;
+  background: #1a1a1a;
+  color: #f5f5f5;
+  border: 1px solid #333;
 }
 
-.primary-btn {
-  background: #ff2d55;
-  color: #fff;
+.toggle-btn:hover:not(:disabled) {
+  background: #252525;
+  border-color: #444;
 }
 
-.primary-btn:hover {
-  background: #ff4d6d;
-}
-
-.unblock-btn {
-  background: #1f5f3f;
-  color: #d8ffe8;
-}
-
-.unblock-btn:hover {
-  background: #26734d;
-}
-
-.primary-btn.hidden,
-.unblock-btn.hidden {
-  display: none;
-}
-
-.primary-btn:disabled,
-.unblock-btn:disabled,
+.toggle-btn:disabled,
 .ghost-btn:disabled {
   opacity: 0.65;
   cursor: wait;

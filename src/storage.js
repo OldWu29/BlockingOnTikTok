@@ -29,18 +29,11 @@ const BlacklistStorage = {
   },
 
   async add(user) {
-    if (!user?.secUid) return false;
+    const info = UserInfoUtil.from(user);
+    if (!info.isValid()) return false;
 
     const map = await this.getMap();
-    map[user.secUid] = {
-      secUid: user.secUid,
-      userId: user.userId || '',
-      nickname: user.nickname && !['未知作者', '未知用户', '主播'].includes(user.nickname)
-        ? user.nickname
-        : '未知用户',
-      blockedAt: user.blockedAt || Date.now()
-    };
-
+    map[info.secUid] = info.toStorageRecord();
     await chrome.storage.local.set({ [this.KEY]: map });
     return true;
   },

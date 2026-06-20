@@ -46,7 +46,8 @@ async function ensureDouyinTab() {
   return tab;
 }
 
-async function unblockOnDouyin(user) {
+async function unblockOnDouyin(userInfo) {
+  const user = UserInfoUtil.from(userInfo);
   const tab = await ensureDouyinTab();
 
   try {
@@ -55,6 +56,7 @@ async function unblockOnDouyin(user) {
       action: 'block-by-id',
       secUid: user.secUid,
       userId: user.userId,
+      nickname: user.nickname,
       unblock: true
     });
 
@@ -76,6 +78,7 @@ async function unblockOnDouyin(user) {
         action: 'block-by-id',
         secUid: user.secUid,
         userId: user.userId,
+        nickname: user.nickname,
         unblock: true
       });
 
@@ -107,15 +110,16 @@ function renderList(items) {
 
   if (visibleItems.length === 0) return;
 
-  visibleItems.forEach((user) => {
+  visibleItems.forEach((raw) => {
+    const user = UserInfoUtil.from(raw);
     const li = document.createElement('li');
     li.className = 'blacklist-item';
 
     const info = document.createElement('div');
     info.className = 'user-info';
     info.innerHTML = `
-      <div class="user-name">${escapeHtml(user.nickname || '未知用户')}</div>
-      <div class="user-meta">${escapeHtml(user.secUid || '')}</div>
+      <div class="user-name">${escapeHtml(user.getDisplayName('未知用户'))}</div>
+      <div class="user-meta">${escapeHtml(user.secUid)}</div>
       <div class="user-meta">拉黑时间：${formatTime(user.blockedAt)}</div>
     `;
 
@@ -135,9 +139,9 @@ function renderList(items) {
     removeBtn.type = 'button';
     removeBtn.textContent = '仅删记录';
     removeBtn.addEventListener('click', async () => {
-      if (!confirm(`仅从本地删除「${user.nickname}」的记录？\n（不会自动在抖音解除拉黑）`)) return;
+      if (!confirm(`仅从本地删除「${user.getDisplayName()}」的记录？\n（不会自动在抖音解除拉黑）`)) return;
       await BlacklistStorage.remove(user.secUid);
-      setStatus(`已删除本地记录：${user.nickname}`, 'success');
+      setStatus(`已删除本地记录：${user.getDisplayName()}`, 'success');
       await loadList();
     });
 
@@ -147,10 +151,10 @@ function renderList(items) {
     unblockBtn.textContent = '解除拉黑';
     unblockBtn.addEventListener('click', async () => {
       unblockBtn.disabled = true;
-      setStatus(`正在解除拉黑：${user.nickname}...`);
+      setStatus(`正在解除拉黑：${user.getDisplayName()}...`);
       try {
         await unblockOnDouyin(user);
-        setStatus(`已解除拉黑：${user.nickname}`, 'success');
+        setStatus(`已解除拉黑：${user.getDisplayName()}`, 'success');
         await loadList();
       } catch (error) {
         setStatus(error.message || '解除拉黑失败', 'error');
@@ -174,7 +178,7 @@ function escapeHtml(text) {
 }
 
 async function loadList() {
-  allItems = await BlacklistStorage.getList();
+  allItems = await UserInfoUtil.getBlacklist();
   renderList(allItems);
 }
 

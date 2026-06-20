@@ -30,7 +30,8 @@ function Test-RequiredFiles {
         "src\popup.js",
         "src\blacklist.html",
         "src\blacklist.js",
-        "src\storage.js"
+        "src\storage.js",
+        "src\user-info.js"
     )
 
     foreach ($file in $required) {
